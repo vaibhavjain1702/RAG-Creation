@@ -719,16 +719,3 @@ All metrics from all 240 experiments
 
 ---
 
-# PART 14: Why This Is a Good Assignment (What Makes It Impressive)
-
-1. **It's modular** — Each file has one job. You can swap the LLM, add a new vector DB, or change chunk sizes just by editing `config.py`.
-
-2. **It compares fairly** — All 24 configurations use the same 100 documents, same 10 questions, same prompt template. The only thing that changes is what we're testing.
-
-3. **It has anti-hallucination measures** — The structured prompt explicitly tells the LLM to not make things up. If it can't find the answer in the context, it says so.
-
-4. **It measures multiple things** — Not just one metric, but ROUGE, BLEU, retrieval relevance, answer relevance, AND latency. This shows a thorough understanding of evaluation.
-
-5. **It runs on student hardware** — No GPU required. Everything works on a Mac M-series laptop.
-
-6. **It's reproducible** — Fixed temperature (0.1), fixed top-k (5), fixed dataset, fixed queries. Someone else can run this and get the same numbers.

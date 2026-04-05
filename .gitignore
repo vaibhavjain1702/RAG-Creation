@@ -3,3 +3,4 @@ __pycache__/
 .env
 cache/
 .DS_Store
+PRIVATE_ASSIGNMENT_NOTES.md
