@@ -50,11 +50,17 @@ def run_demo():
     store = create_vector_store("faiss", dimension=embeddings.shape[1])
     store.add(embeddings, chunks)
     
-    # Step 5: Load LLM
-    log("Step 5: Loading LLM (TinyLlama)...")
-    pipe = load_llm("tinyllama")
+    # Step 5: Choose LLM
+    print("\n🤖 Choose your LLM:")
+    print("  [1] TinyLlama (1.1B) — Fast (~8s per answer)")
+    print("  [2] Phi-2 (2.7B)     — Better quality (~30s per answer)")
+    choice = input("Enter 1 or 2 (default=1): ").strip()
+    llm_key = "phi2" if choice == "2" else "tinyllama"
     
-    print_separator("READY — Enter queries (type 'quit' to exit)")
+    log(f"Step 5: Loading LLM ({llm_key})...")
+    pipe = load_llm(llm_key)
+    
+    print_separator(f"READY ({llm_key}) — Enter queries (type 'quit' to exit)")
     
     while True:
         query = input("\n📝 Your question: ").strip()

@@ -30,8 +30,14 @@ def load_llm(model_key):
     model_name = LLM_MODELS[model_key]
     log(f"Loading LLM: {model_name}...")
     
-    # Determine dtype based on device
-    if torch.backends.mps.is_available():
+    # Determine dtype and device based on model
+    # Phi-2 is numerically unstable with float16 on MPS and float32 is too large (10GB)
+    # Solution: run Phi-2 on CPU with float32 (slower but stable and reliable)
+    if model_key == "phi2":
+        device_map = "cpu"
+        torch_dtype = torch.float32
+        log("  (Phi-2 running on CPU with float32 for stability)")
+    elif torch.backends.mps.is_available():
         device_map = "mps"
         torch_dtype = torch.float16
     else:
