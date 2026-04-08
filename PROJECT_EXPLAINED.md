@@ -410,21 +410,37 @@ When we give it a prompt (our formatted context + question), it predicts what th
 In `generator.py`, `load_llm()` does this:
 
 ```python
-# Step 1: Detect device (MPS = Apple Silicon GPU, CPU = Intel)
-if torch.backends.mps.is_available():
-    device_map = "mps"       # Use Apple GPU
-    torch_dtype = torch.float16  # Half precision (faster, saves memory)
+# Step 1: Detect device (MPS = Apple, CUDA = Colab GPU, CPU = Intel)
+if torch.cuda.is_available():
+    device_map = "auto"
+    torch_dtype = torch.float16
+elif torch.backends.mps.is_available():
+    device_map = "mps"
+    torch_dtype = torch.float16
 else:
     device_map = "cpu"       # Fall back to CPU
     torch_dtype = torch.float32  # Full precision
 
 # Step 2: Load tokenizer (converts text ↔ numbers)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
-# Step 3: Load the model weights (the actual "brain")
-model = AutoModelForCausalLM.from_pretrained(model_name, ...)
+# Step 3: Crucial Bug Fix for Phi-2 (Injecting pad_token_id)
+# Older transformers libraries crash on Phi-2 because it is missing a pad token.
+# We intercept the config and fix it manually before loading the heavy weights.
+config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+if not hasattr(config, "pad_token_id") or config.pad_token_id is None:
+    config.pad_token_id = tokenizer.eos_token_id
 
-# Step 4: Wrap in a pipeline (makes it easy to call)
+# Step 4: Load the model weights (the actual "brain")
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, 
+    config=config, 
+    device_map=device_map, 
+    torch_dtype=torch_dtype, 
+    trust_remote_code=True
+)
+
+# Step 5: Wrap in a pipeline (makes it easy to call)
 pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
 ```
 
