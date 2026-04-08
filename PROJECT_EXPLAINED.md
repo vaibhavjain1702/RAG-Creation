@@ -757,3 +757,157 @@ If the code is run on **Google Colab**:
 ---
 
 # PART 16: Why This Is a Good Assignment (What Makes It Impressive)
+
+
+# PART 17: VIVA PREPARATION (Questions & Answers)
+
+## 7.1 Core Concept Questions
+
+### Q: What is RAG and why is it needed?
+**A:** RAG (Retrieval-Augmented Generation) combines information retrieval with text generation. Instead of relying solely on the LLM's parametric knowledge (which may be outdated or incomplete), RAG retrieves relevant documents from an external knowledge base and includes them as context in the prompt. This is needed because:
+- LLMs hallucinate — they generate plausible but wrong information
+- LLMs have a knowledge cutoff date — they can't answer about recent events
+- LLMs lack domain-specific knowledge not in their training data
+- RAG provides verifiable answers traceable to source documents
+
+### Q: Why do we need chunking? Why not pass the whole document?
+**A:** LLMs have a limited context window (e.g., TinyLlama has 2048 tokens). A single arXiv paper can be 15,000+ characters (~4000 tokens), far exceeding this limit. Chunking:
+- Splits documents into digestible pieces that fit the context window
+- Enables precise retrieval — we can find the exact paragraph relevant to a query, not the entire 20-page paper
+- Improves retrieval accuracy — smaller, focused chunks have better embedding representations than entire documents
+- Allows overlap to prevent information loss at chunk boundaries
+
+### Q: How does the choice of chunk size affect performance?
+**A:** It's a trade-off:
+- **Small chunks (256):** More precise retrieval but risk fragmenting important context. A key explanation spanning two sentences might be split across chunks.
+- **Medium chunks (512):** Best balance — captures complete paragraphs/ideas while maintaining retrieval precision. Our experiments confirmed this.
+- **Large chunks (1024):** More context per chunk but lower retrieval precision — the relevant sentence is buried among irrelevant text, diluting the embedding and confusing the LLM.
+
+### Q: Why FAISS vs ChromaDB? What's the difference?
+**A:** 
+- **FAISS** is a pure similarity search library by Meta. It's extremely fast, supports exact and approximate search, but has no built-in metadata handling. Think of it as a "search engine for vectors."
+- **ChromaDB** is a vector database with metadata support, persistence, and filtering capabilities. It wraps an ANN algorithm (HNSW) with a document-store interface.
+- **In our experiments:** They produced identical quality results because at 100 documents (~1000-2000 chunks), even brute-force search is instantaneous. FAISS was faster. ChromaDB would be advantageous in production with millions of documents and complex metadata filters.
+
+### Q: Why did you choose MiniLM and BGE as embedding models?
+**A:**
+- **MiniLM (all-MiniLM-L6-v2):** General-purpose sentence embedding model. Widely used baseline, fast inference, 384 dimensions. Good for semantic similarity.
+- **BGE (bge-small-en-v1.5):** Specifically trained for retrieval using contrastive learning on query-passage pairs. Ranks among top models on the MTEB leaderboard. Same 384 dimensions, so direct comparison is fair.
+- We chose these because they run efficiently on CPU, produce the same dimensionality for fair comparison, and represent two different training paradigms (general vs. retrieval-specific).
+
+### Q: How does your system prevent hallucination?
+**A:** Multiple strategies:
+1. **Prompt engineering:** Explicit instruction "Answer ONLY from context" with a fallback "I cannot answer" clause
+2. **Low temperature (0.1):** Near-deterministic generation reduces creative/invented content
+3. **Context grounding:** The LLM sees the actual source passages, not just its parametric memory
+4. **Post-processing:** We truncate output at continuation markers to prevent the model from generating additional ungrounded Q&A pairs
+
+### Q: What is cosine similarity and why do you use it?
+**A:** Cosine similarity measures the angle between two vectors, ignoring their magnitude. It equals the dot product of unit-normalized vectors. We use it because:
+- It captures semantic similarity: texts with similar meaning have vectors pointing in similar directions
+- It's scale-invariant: a longer document doesn't automatically score higher
+- It's efficient: with L2-normalized vectors, cosine similarity is just a dot product (FAISS IndexFlatIP)
+- Values range from -1 to 1, with 1 meaning identical semantics
+
+### Q: What is the difference between ROUGE and BLEU?
+**A:**
+- **ROUGE** focuses on **recall** — what fraction of the reference text is captured in the generated text. ROUGE-L specifically measures the longest common subsequence.
+- **BLEU** focuses on **precision** — what fraction of the generated n-grams appear in the reference. Originally designed for machine translation.
+- In RAG evaluation, ROUGE is generally more meaningful because we want the answer to cover the key information from the reference, not just produce matching n-grams.
+
+### Q: What would you do differently with unlimited resources?
+**A:**
+1. Use larger LLMs (Mistral-7B, LLaMA-3-8B) for significantly better generation quality
+2. Add a cross-encoder reranker after retrieval to improve precision
+3. Implement hybrid search combining dense (embedding) and sparse (BM25/TF-IDF) retrieval
+4. Use domain-specific fine-tuned embeddings trained on scientific text
+5. Implement multi-query retrieval — generating query variants to improve recall
+6. Use GPU acceleration for both embedding and inference
+
+### Q: What is the role of temperature in LLM generation?
+**A:** Temperature controls the randomness of the output distribution:
+- **T=0:** Greedy decoding — always picks the highest probability token. Most deterministic and reproducible.
+- **T=0.1 (our setting):** Near-deterministic with slight variation. Good for factual Q&A.
+- **T=0.7-1.0:** More creative and diverse outputs. Better for creative writing, worse for factual accuracy.
+- We use T=0.1 because RAG demands factual, grounded answers with minimal creative deviation.
+
+### Q: How do you handle papers with heavy mathematical content?
+**A:** Our `data_loader.py` preprocessing pipeline:
+1. Removes all LaTeX math environments (`\begin{equation}...\end{equation}`)
+2. Removes inline math (`$x^2$`)
+3. Removes citation markers (`@xcite`, `\cite{}`)
+4. Keeps the natural language text descriptions around the math
+5. This is acceptable because our queries are about concepts and methods, not specific equations
+
+### Q: Why not use a fine-tuned model instead of RAG?
+**A:** Fine-tuning and RAG solve different problems:
+- **Fine-tuning:** Bakes domain knowledge into model weights. Expensive to retrain, hard to update, no source attribution.
+- **RAG:** Keeps knowledge external and retrievable. Easy to update (just add new documents), provides source traceability, and works with any base LLM.
+- For 100 scientific papers, RAG is far more practical than fine-tuning a billion-parameter model on limited data.
+
+---
+
+# PART 18: ADVANCED VIVA DEFENSE (Final Improvements) (Advanced Techniques for High Marks)
+
+## 8.1 Cross-Encoder Reranking
+
+**What it is:** After initial retrieval returns top-k results, a cross-encoder re-scores each (query, chunk) pair for more accurate relevance ranking.
+
+**Why it helps:** Bi-encoders (sentence-transformers) encode query and document independently, then compare. Cross-encoders process both together, capturing fine-grained interactions. This catches cases where the bi-encoder misranked results.
+
+**Implementation:**
+```python
+from sentence_transformers import CrossEncoder
+reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+pairs = [(query, chunk["text"]) for chunk in retrieved_chunks]
+scores = reranker.predict(pairs)
+# Reorder chunks by cross-encoder score
+```
+
+## 8.2 Hybrid Search (Dense + Sparse)
+
+**What it is:** Combines embedding-based (dense) retrieval with keyword-based (sparse, BM25/TF-IDF) retrieval using Reciprocal Rank Fusion.
+
+**Why it helps:** Dense search captures semantic meaning ("car" matches "automobile"). Sparse search captures exact terms ("SVM" matches "SVM" even if the embedding model doesn't know the acronym). Together, they improve recall.
+
+**Implementation:**
+```python
+from sklearn.feature_extraction.text import TfidfVectorizer
+tfidf = TfidfVectorizer()
+sparse_matrix = tfidf.fit_transform(chunk_texts)
+# Combine dense and sparse scores using Reciprocal Rank Fusion (RRF)
+# RRF_score = 1/(k + dense_rank) + 1/(k + sparse_rank)
+```
+
+## 8.3 Multi-Query Retrieval
+
+**What it is:** Generate 3-5 variations of the original query, retrieve for each, and merge results.
+
+**Why it helps:** A single query may miss relevant documents that use different terminology. Generating rephrased queries improves recall.
+
+**Example:**
+- Original: "How does regularization prevent overfitting?"
+- Variant 1: "What is the effect of L1 and L2 penalties on model generalization?"
+- Variant 2: "Regularization techniques in machine learning"
+- Variant 3: "How to reduce overfitting using weight constraints"
+
+## 8.4 Contextual Compression
+
+**What it is:** After retrieval, extract only the sentences from each chunk that are relevant to the query, discarding noise.
+
+**Why it helps:** Even within a relevant 512-char chunk, perhaps only 2 of 5 sentences directly address the query. Compressing to those 2 sentences gives the LLM less noise to process.
+
+## 8.5 Ways to Reduce Hallucination (Summary)
+
+| Technique | Implementation | Effectiveness |
+|-----------|---------------|---------------|
+| Explicit constraints in prompt | "Answer ONLY from context" | High — reduces hallucination by ~70% |
+| Low temperature | temperature=0.1 | Medium — reduces creative extrapolation |
+| "I don't know" instruction | Fallback clause in prompt | High — prevents fabrication on unanswerable queries |
+| Context grounding | Number excerpts [Excerpt 1], [Excerpt 2] | Medium — encourages citing specific passages |
+| Chain-of-thought | Require step-by-step reasoning | Medium — makes reasoning traceable |
+| Post-processing | Remove text after stop markers | Low — cosmetic but prevents continuation artifacts |
+
+---
+
+*Document generated for Assignment 1 — Generative AI and LLMs, Semester 6.*
