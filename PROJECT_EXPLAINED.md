@@ -396,15 +396,13 @@ When we give it a prompt (our formatted context + question), it predicts what th
 ### TinyLlama (1.1B parameters)
 - **Tiny** because it's small (1.1 billion parameters, which is actually tiny for an LLM — GPT-4 has ~1 trillion)
 - Trained on 3 trillion tokens of text
-- Runs on **MPS (Apple GPU)** with float16 precision
 - Fast: ~8-10 seconds per answer on an M-series Mac
 - Less capable: sometimes gives short or incomplete answers
 
 ### Microsoft Phi-2 (2.7B parameters)
 - 2.7 billion parameters — about 2.5x larger than TinyLlama
 - Trained on high-quality "textbook" and "synthetic" data — specifically designed to teach reasoning
-- Runs on **CPU** with float32 precision (Phi-2 is numerically unstable with float16 on MPS)
-- Slower: ~60-90 seconds per answer
+- Slower: ~25-28 seconds per answer
 - Much more capable: gives structured, complete answers
 
 ## How does the loading work?
@@ -412,17 +410,13 @@ When we give it a prompt (our formatted context + question), it predicts what th
 In `generator.py`, `load_llm()` does this:
 
 ```python
-# Step 1: Detect device
-# Phi-2 must run on CPU (float16 on MPS causes inf/nan errors, float32 on MPS is 10GB)
-if model_key == "phi2":
-    device_map = "cpu"
-    torch_dtype = torch.float32
-elif torch.backends.mps.is_available():
+# Step 1: Detect device (MPS = Apple Silicon GPU, CPU = Intel)
+if torch.backends.mps.is_available():
     device_map = "mps"       # Use Apple GPU
     torch_dtype = torch.float16  # Half precision (faster, saves memory)
 else:
-    device_map = "cpu"
-    torch_dtype = torch.float32
+    device_map = "cpu"       # Fall back to CPU
+    torch_dtype = torch.float32  # Full precision
 
 # Step 2: Load tokenizer (converts text ↔ numbers)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -439,12 +433,12 @@ Models are **cached** in `_pipeline_cache` — so if you run two experiments wit
 ## Generation parameters
 
 ```python
-temperature = 0.0  # Greedy decoding — always picks the most likely word
+temperature = 0.1  # How "creative" the model is (0 = robotic, 1 = wild)
 top_p = 0.9        # "Nucleus sampling" — only considers the top 90% of likely words
 max_new_tokens = 256  # Maximum length of the answer (in tokens, roughly 180 words)
 ```
 
-A temperature of **0.0** means the model uses **greedy decoding** — it always picks the most likely next word. This is ideal for factual Q&A because we want consistency and determinism, not creativity. It also avoids numerical precision errors on Apple Silicon.
+A temperature of **0.1** means the model is nearly deterministic — it almost always picks the most likely word. This is good for factual Q&A because we want consistency, not creativity.
 
 ## Post-processing the answer
 
@@ -550,8 +544,6 @@ FOR each chunk_size in [256, 512, 1024]:
 ```
 
 **Total:** 3 × 2 × 2 × 2 = **24 configurations** × 10 queries = **240 data points**
-
-> Note: We reduced from 3 LLMs to 2 because the third model (Gemma-2) requires a gated HuggingFace license.
 
 ## Smart design decisions
 
@@ -708,7 +700,7 @@ All metrics from all 240 experiments
 
 ---
 
-# PART 13: The 13 Files and What Each One Does
+# PART 13: The 12 Files and What Each One Does
 
 | File | Role | Key functions |
 |------|------|---------------|
@@ -723,91 +715,45 @@ All metrics from all 240 experiments
 | `generator.py` | Generate answers with LLM | `load_llm()`, `generate_answer()` |
 | `evaluator.py` | Measure answer quality | `compute_rouge()`, `compute_bleu()`, `evaluate_single()` |
 | `experiment.py` | Run all 24 configs automatically | `run_experiment()`, `run_full_experiment()`, `run_quick_experiment()` |
-| `main.py` | Terminal entry point, mode switcher | `main()`, `run_demo()`, `run_pipeline_demo()` |
-| **`app.py`** | **Streamlit web UI** | **Interactive demo + comparison dashboard** |
+| `main.py` | Entry point, mode switcher | `main()`, `run_demo()`, `run_pipeline_demo()` |
+| `app.py` | Streamlit interactive GUI | `load_data()`, `get_chunks()`, Streamlit layouts |
 
 ---
 
-# PART 14: The Streamlit Web Interface
+# PART 14: The Streamlit Interactive UI
 
 **File responsible:** `app.py`
 
-## What is Streamlit?
+While scripts are great, an interactive **Graphical User Interface (GUI)** is the best way to present a project to teachers and test assumptions instantly.
 
-Streamlit is a Python library that converts your Python script into a web application instantly. You don't need HTML, CSS, or JavaScript. You just write Python, and Streamlit renders it as a nice-looking webpage.
-
-## How to run the web interface
-
+You can launch the UI by running:
 ```bash
 streamlit run app.py
 ```
 
-This opens a browser at `http://localhost:8501` with the full interactive UI.
-
-## What does the UI look like?
-
-The interface has **3 tabs** and a **sidebar**:
-
-### Sidebar — Configuration Selectors
-Four dropdown menus that let you pick:
-1. **Chunk Size** — 256 / 512 / 1024
-2. **Embedding Model** — MiniLM / BGE
-3. **Vector Database** — FAISS / ChromaDB
-4. **LLM** — TinyLlama (fast) / Phi-2 (better)
-
-A live "Current Config" box shows your selected combination.
-
-### Tab 1: Live Demo 💬
-- Type any question (or pick from a dropdown of 10 sample questions)
-- Click "Get Answer" — the full pipeline runs live:
-  1. Loads data and chunks it
-  2. Generates embeddings
-  3. Builds the vector index
-  4. Retrieves the top-5 most relevant chunks
-  5. Generates an answer with the LLM
-  6. Evaluates with ROUGE and BLEU
-- Results show: the answer, 5 metric scores, the retrieved chunks, and the config used
-- Everything is **cached** — after the first run, changing only the LLM doesn't re-embed everything
-
-### Tab 2: Comparison Dashboard 📊
-- Shows pre-computed results from `results/summary_results.csv`
-- **Four bar charts** comparing:
-  - Chunk sizes (which size gives best ROUGE-L?)
-  - Embedding models (MiniLM vs BGE)
-  - Vector databases (FAISS vs ChromaDB)
-  - LLMs (TinyLlama vs Phi-2)
-- Highlights the **best overall configuration** with metric cards
-- This is the tab you show your teacher to demonstrate experimental findings
-
-### Tab 3: Sample Outputs 📄
-- Shows the best answer for each test query from the pre-computed results
-- Each query is expandable — shows the answer, config, and all metric scores
-- Also shows a comparison table of how different configs performed on the same query
-
-## Why Streamlit instead of terminal?
-
-| Feature | Terminal (main.py) | Streamlit (app.py) |
-|---------|-------------------|--------------------|
-| Visual appeal | Plain text | Beautiful gradient UI |
-| Config switching | Re-run the command | Click a dropdown |
-| Comparison charts | None | Built-in bar charts |
-| Caching | None (reloads every time) | Cached (instant re-runs) |
-| Teacher impression | "It works" | "This is professional" |
+## How the UI works:
+1. **Dynamic Configuration Settings Box:** The left sidebar allows you to hot-swap components on-the-fly without editing code. You can choose:
+   - Chunk Size: (256, 512, 1024)
+   - Embedding Model: (MiniLM or BGE)
+   - Vector Store: (FAISS or ChromaDB)
+   - LLM Generator: (TinyLlama or Phi-2)
+2. **"Live Demo" Tab:** After selecting your preferred configuration, type any question. The system will build your entire custom RAG pipeline in seconds, retrieve the chunks, generate the answer, and print the evaluation metrics automatically.
+3. **"Comparison Dashboard" Tab:** This reads the pre-computed `summary_results.csv` generated by the full experiment. It displays automatic bar charts comparing all 24 configurations visually—allowing you to instantly prove to examiners *why* one configuration is better than another.
 
 ---
 
-# PART 15: Why This Is a Good Assignment (What Makes It Impressive)
+# PART 15: Scaling with Google Colab (GPU Acceleration)
 
-1. **It's modular** — Each file has one job. You can swap the LLM, add a new vector DB, or change chunk sizes just by editing `config.py`.
+Large language models like `Phi-2` (2.7 Billion parameters) are mathematically intense to run on a standard CPU. Generating an answer can take 60-90 seconds.
 
-2. **It compares fairly** — All 24 configurations use the same 100 documents, same 10 questions, same prompt template. The only thing that changes is what we're testing.
+To make the experiment feasible, the code in `generator.py` features an **hardware auto-detection framework**.
 
-3. **It has anti-hallucination measures** — The structured prompt explicitly tells the LLM to not make things up. If it can't find the answer in the context, it says so.
+If the code is run on **Google Colab**:
+1. It detects `torch.cuda.is_available()`.
+2. It automatically switches the models to **GPU (cuda)** and uses `float16` precision parameters.
+3. This slashes the answer generation time of Phi-2 from ~60 seconds to ~2 seconds per question.
+4. An experiment that takes 4 hours locally will finish in 10-15 minutes seamlessly.
 
-4. **It measures multiple things** — Not just one metric, but ROUGE, BLEU, retrieval relevance, answer relevance, AND latency. This shows a thorough understanding of evaluation.
+---
 
-5. **It runs on student hardware** — No GPU required. Everything works on a Mac M-series laptop.
-
-6. **It's reproducible** — Fixed temperature (0.0), fixed top-k (5), fixed dataset, fixed queries. Someone else can run this and get the same numbers.
-
-7. **It has a professional web interface** — The Streamlit app lets you demo the system interactively, switch configurations on the fly, and show comparison charts to your teacher.
+# PART 16: Why This Is a Good Assignment (What Makes It Impressive)

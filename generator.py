@@ -30,72 +30,87 @@ def load_llm(model_key):
     model_name = LLM_MODELS[model_key]
     log(f"Loading LLM: {model_name}...")
     
-    # Determine dtype and device based on model
-    # Phi-2 is numerically unstable with float16 on MPS and float32 is too large (10GB)
-    # Solution: run Phi-2 on CPU with float32 (slower but stable and reliable)
-    if model_key == "phi2":
-        device_map = "cpu"
-        torch_dtype = torch.float32
-        log("  (Phi-2 running on CPU with float32 for stability)")
-    elif torch.backends.mps.is_available():
-        device_map = "mps"
+    # Determine dtype and device based on environment
+    if torch.cuda.is_available():
+        device_map = "cuda"
         torch_dtype = torch.float16
+        log(f"  (Running on Google Colab / CUDA with float16)")
+    elif torch.backends.mps.is_available():
+        # Phi-2 is numerically unstable with float16 on MPS and float32 is too large (10GB)
+        # Solution: run Phi-2 on CPU with float32 (slower but stable and reliable)
+        if model_key == "phi2":
+            device_map = "cpu"
+            torch_dtype = torch.float32
+            log("  (Phi-2 running on CPU with float32 for stability on Mac)")
+        else:
+            device_map = "mps"
+            torch_dtype = torch.float16
     else:
         device_map = "cpu"
         torch_dtype = torch.float32
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    from transformers import AutoConfig
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    if getattr(config, "pad_token_id", None) is None:
+        config.pad_token_id = tokenizer.pad_token_id
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        config=config,
         torch_dtype=torch_dtype,
         device_map=device_map,
         low_cpu_mem_usage=True,
+        trust_remote_code=True
     )
     
-    # Set pad token if not set
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-    )
-    
-    _pipeline_cache[model_key] = pipe
-    log(f"Loaded {model_key} on {device_map}")
-    return pipe
+    # We return a dictionary instead of a pipeline to bypass transformers' 
+    # buggy pipeline() validation which crashes on PhiConfig in newer versions
+    _pipeline_cache[model_key] = {"model": model, "tokenizer": tokenizer, "name": model_key}
+    log(f"Loaded {model_key} on {device_map} (Raw API)")
+    return _pipeline_cache[model_key]
 
 
-def generate_answer(pipe, prompt, max_new_tokens=MAX_NEW_TOKENS,
+def generate_answer(pipe_dict, prompt, max_new_tokens=MAX_NEW_TOKENS,
                     temperature=TEMPERATURE, top_p=TOP_P):
     """
     Generate an answer given a prompt.
-    
-    Args:
-        pipe: transformers text-generation pipeline.
-        prompt: Full prompt string (with context and question).
-        max_new_tokens: Maximum tokens to generate.
-        temperature: Sampling temperature (lower = more deterministic).
-        top_p: Nucleus sampling parameter.
-    
-    Returns:
-        Generated answer string (only the new text, not the prompt).
     """
-    output = pipe(
-        prompt,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        do_sample=True if temperature > 0 else False,
-        return_full_text=False,  # Only return generated text
-        pad_token_id=pipe.tokenizer.eos_token_id,
-    )
+    model = pipe_dict["model"]
+    tokenizer = pipe_dict["tokenizer"]
     
-    answer = output[0]["generated_text"].strip()
+    # Move inputs to same device as model
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    
+    # Determine generation parameters
+    gen_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "pad_token_id": tokenizer.eos_token_id,
+        "use_cache": True
+    }
+    
+    if temperature > 0:
+        gen_kwargs["do_sample"] = True
+        gen_kwargs["temperature"] = temperature
+        gen_kwargs["top_p"] = top_p
+    else:
+        gen_kwargs["do_sample"] = False
+        
+    with torch.no_grad():
+        output_ids = model.generate(**inputs, **gen_kwargs)
+        
+    # Extract only the generated tokens (slice off the prompt)
+    prompt_length = inputs["input_ids"].shape[1]
+    new_tokens = output_ids[0][prompt_length:]
+    
+    answer = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
     
     # Post-process: stop at common continuation patterns
-    # (LLMs often keep generating additional Q&A pairs)
     stop_markers = ["\n---", "\nQuestion:", "\n\nQuestion", "---\n", "\n\n\n"]
     for marker in stop_markers:
         if marker in answer:

@@ -3,7 +3,7 @@ Module 2: Text Chunking.
 Splits cleaned documents into overlapping chunks using multiple strategies.
 """
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from config import CHUNK_SIZES, CHUNK_OVERLAP_RATIO
 from utils import log
 
